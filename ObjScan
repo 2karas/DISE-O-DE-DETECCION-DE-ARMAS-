@@ -1,0 +1,184 @@
+import cv2
+import os
+import supervision as sv
+from ultralytics import YOLO
+import time
+import pygame
+import numpy as np
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
+# Configuración de Correo
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+EMAIL_ADDRESS = "villegassbrayder@gmail.com"
+EMAIL_PASSWORD = "bbop zmwl fsma nsiv"
+
+
+# Función para enviar correo con archivo adjunto
+def enviar_correo(asunto, mensaje, archivo_adj):
+    try:
+        servidor = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        servidor.starttls()
+        servidor.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+
+        correo = MIMEMultipart()
+        correo["From"] = EMAIL_ADDRESS
+        correo["To"] = EMAIL_ADDRESS
+        correo["Subject"] = asunto
+        correo.attach(MIMEText(mensaje, "plain"))
+
+        # Adjuntar imagen
+        with open(archivo_adj, "rb") as adj:
+            parte = MIMEBase("application", "octet-stream")
+            parte.set_payload(adj.read())
+        encoders.encode_base64(parte)
+        parte.add_header("Content-Disposition", f"attachment; filename={os.path.basename(archivo_adj)}")
+        correo.attach(parte)
+
+        servidor.send_message(correo)
+        print("¡Correo enviado con éxito!")
+    except Exception as e:
+        print(f"Error al enviar el correo: {e}")
+    finally:
+        servidor.quit()
+
+
+# Función para obtener la hora y fecha actual
+def get_current_time_and_date():
+    return time.strftime("%H:%M:%S"), time.strftime("%d/%m/%Y")
+
+
+# Inicializar pygame para reproducir sonido
+pygame.mixer.init()
+alarm_sound = pygame.mixer.Sound('alarma.mp3')
+
+# Cargar el modelo YOLO
+model = YOLO('best.pt')
+
+# Inicializar los anotadores
+bounding_box_annotator = sv.BoundingBoxAnnotator()
+label_annotator = sv.LabelAnnotator()
+
+# Capturar video desde la webcam de la laptop y la cámara DroidCam
+cap_laptop = cv2.VideoCapture(0)
+cap_droidcam = cv2.VideoCapture(1)
+
+if not cap_laptop.isOpened() or not cap_droidcam.isOpened():
+    print("No se pudo acceder a una o ambas cámaras")
+    exit()
+
+output_dir = 'output_images'
+os.makedirs(output_dir, exist_ok=True)
+
+img_counter = 0
+alarm_active = False
+alert_shown_laptop = False
+alert_shown_droidcam = False
+
+while True:
+    ret_laptop, frame_laptop = cap_laptop.read()
+    ret_droidcam, frame_droidcam = cap_droidcam.read()
+
+    if not ret_laptop or not ret_droidcam:
+        print("Error al capturar frames")
+        break
+
+    results_laptop = model(frame_laptop)[0]
+    detections_laptop = sv.Detections.from_ultralytics(results_laptop)
+    annotated_image_laptop = bounding_box_annotator.annotate(scene=frame_laptop, detections=detections_laptop)
+    annotated_image_laptop = label_annotator.annotate(scene=annotated_image_laptop, detections=detections_laptop)
+
+    results_droidcam = model(frame_droidcam)[0]
+    detections_droidcam = sv.Detections.from_ultralytics(results_droidcam)
+    annotated_image_droidcam = bounding_box_annotator.annotate(scene=frame_droidcam, detections=detections_droidcam)
+    annotated_image_droidcam = label_annotator.annotate(scene=annotated_image_droidcam, detections=detections_droidcam)
+
+    height, width, _ = frame_laptop.shape
+    current_time, current_date = get_current_time_and_date()
+
+    cv2.putText(annotated_image_laptop, "ObjScan v1.4", (10, 30), cv2.FONT_HERSHEY_PLAIN, 1.5, (255, 255, 255), 1,
+                cv2.LINE_AA)
+    cv2.putText(annotated_image_laptop, f"Hora: {current_time}", (width - 170, height - 35), cv2.FONT_HERSHEY_PLAIN, 1,
+                (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(annotated_image_laptop, f"Fecha: {current_date}", (width - 170, height - 15), cv2.FONT_HERSHEY_PLAIN, 1,
+                (255, 255, 255), 1, cv2.LINE_AA)
+
+    cv2.putText(annotated_image_droidcam, "ObjScan v1.4", (10, 30), cv2.FONT_HERSHEY_PLAIN, 1.5, (255, 255, 255), 1,
+                cv2.LINE_AA)
+    cv2.putText(annotated_image_droidcam, f"Hora: {current_time}", (width - 170, height - 35), cv2.FONT_HERSHEY_PLAIN,
+                1, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(annotated_image_droidcam, f"Fecha: {current_date}", (width - 170, height - 15), cv2.FONT_HERSHEY_PLAIN,
+                1, (255, 255, 255), 1, cv2.LINE_AA)
+
+    arma_detectada_laptop = False
+    arma_detectada_droidcam = False
+
+    for i, detection in enumerate(detections_laptop.xyxy):
+        confidence = detections_laptop.confidence[i]
+        label = results_laptop.names[detections_laptop.class_id[i]]
+
+        if confidence >= 0.70:
+            arma_detectada_laptop = True
+            img_path = os.path.join(output_dir, f"arma_detectada_laptop_{img_counter}.jpg")
+            cv2.imwrite(img_path, annotated_image_laptop)
+            img_counter += 1
+
+            if not alert_shown_laptop:
+                cv2.putText(annotated_image_laptop, "ALERTA: ARMA DETECTADA", (width // 2 - 200, 50),
+                            cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 3, cv2.LINE_AA)
+                alert_shown_laptop = True
+
+            if not alarm_active:
+                pygame.mixer.Sound.play(alarm_sound)
+                alarm_active = True
+
+            asunto = "ALERTA: Arma Detectada en la Laptop"
+            mensaje = f"Se ha detectado un arma en la cámara de la laptop.\nHora: {current_time}\nFecha: {current_date}"
+            enviar_correo(asunto, mensaje, img_path)
+
+            os.remove(img_path)  # Eliminar la imagen después de enviarla
+
+    for i, detection in enumerate(detections_droidcam.xyxy):
+        confidence = detections_droidcam.confidence[i]
+        label = results_droidcam.names[detections_droidcam.class_id[i]]
+
+        if confidence >= 0.70:
+            arma_detectada_droidcam = True
+            img_path = os.path.join(output_dir, f"arma_detectada_droidcam_{img_counter}.jpg")
+            cv2.imwrite(img_path, annotated_image_droidcam)
+            img_counter += 1
+
+            if not alert_shown_droidcam:
+                cv2.putText(annotated_image_droidcam, "ALERTA: ARMA DETECTADA", (width // 2 - 200, 50),
+                            cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 3, cv2.LINE_AA)
+                alert_shown_droidcam = True
+
+            if not alarm_active:
+                pygame.mixer.Sound.play(alarm_sound)
+                alarm_active = True
+
+            asunto = "ALERTA: Arma Detectada en la DroidCam"
+            mensaje = f"Se ha detectado un arma en la cámara DroidCam.\nHora: {current_time}\nFecha: {current_date}"
+            enviar_correo(asunto, mensaje, img_path)
+
+            os.remove(img_path)  # Eliminar la imagen después de enviarla
+
+    if not arma_detectada_laptop and not arma_detectada_droidcam:
+        alarm_active = False
+        alert_shown_laptop = False
+        alert_shown_droidcam = False
+        pygame.mixer.stop()
+
+    combined_frame = np.hstack((annotated_image_laptop, annotated_image_droidcam))
+    cv2.imshow("ObjScan - Webcam Laptop y DroidCam", combined_frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap_laptop.release()
+cap_droidcam.release()
+cv2.destroyAllWindows()
